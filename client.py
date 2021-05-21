@@ -46,41 +46,26 @@ class Client():
         with torch.no_grad():
             eval_score = self.eval(self.globalModel)
 
+            self.model = copy_model(self.globalModel,
+                                    self.args.dataset,
+                                    self.args.arch,
+                                    source_buff=dict(self.model.named_buffers()))
             # get pruning summary for globalModel
             num_pruned, num_params = summarize_prune(
-                self.globalModel, name='weight')
+                self.model, name='weight')
             cur_prune_rate = num_pruned / num_params
 
             if eval_score["Accuracy"][0] > self.eita:
-                #--------------------Lottery Finder-----------------#
-                # expected final pruning % of local model
-                # prune model by prune_rate - current_prune_rate
-                # every iteration pruning should be increase by prune_step if viable
-                self.cur_prune_rate = min(self.cur_prune_rate + self.args.prune_step,
-                                          self.args.prune_percent)
-                if self.cur_prune_rate > cur_prune_rate:
-                    self.prune(self.globalModel,
-                               prune_rate=self.cur_prune_rate - cur_prune_rate)
-                    self.prune_rates[self.elapsed_comm_rounds] = self.cur_prune_rate
-                    self.model = copy_model(self.global_initModel,
-                                            self.args.dataset,
-                                            self.args.arch,
-                                            source_buff=dict(self.globalModel.named_buffers()))
+                if cur_prune_rate < self.args.prune_percent:
+                    pruning_amount = min(
+                        cur_prune_rate+self.args.prune_step,
+                        self.args.prune_percent)
+                    self.prune(self.model,
+                               prune_rate=pruning_amount - cur_prune_rate)
+                    self.prune_rates[self.elapsed_comm_rounds] = pruning_amount
                 else:
-                    self.model = self.globalModel
-                # eita reinitialized to original val
-                self.eita = self.args.eita_hat
-
-            else:
-                #---------------------Straggler-----------------------------#
-                # eita = eita*alpha
-                self.cur_prune_rate = 0.00
-                self.eita *= self.args.alpha
-                self.prune_rates[self.elapsed_comm_rounds] = cur_prune_rate
-                # copy globalModel
-                self.model = self.globalModel
+                    self.prune_rates[self.elapsed_comm_rounds] = cur_prune_rate
         #-----------------------TRAINING LOOOP ------------------------#
-        # train both straggler and LH finder
         self.model.train()
         self.train(self.elapsed_comm_rounds)
         self.eval_score = self.eval(self.model)
