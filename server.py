@@ -186,10 +186,10 @@ class Server():
         """
 
         # TODO: parallelize upload to clients (broadcasting stratergy)
-        init_model = copy_model(self.init_model,
-                                self.args.dataset,
-                                self.args.arch)
         for client in clients:
+            init_model = copy_model(self.init_model,
+                                    self.args.dataset,
+                                    self.args.arch)
             model_copy = copy_model(self.model,
                                     self.args.dataset,
                                     self.args.arch)
