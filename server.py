@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.nn import Module
-from util import get_prune_params, super_prune, fed_avg, l1_prune, create_model, copy_model, get_prune_summary
+from util import get_prune_params, super_prune, fed_avg, l1_prune, create_model, copy_model, get_prune_summary, merge_models
 
 
 class Server():
@@ -45,7 +45,7 @@ class Server():
         weights_per_client = np.array(
             [client.num_data for client in clients], dtype=np.float32)
         weights_per_client /= np.sum(weights_per_client)
-        aggr_model = fed_avg(
+        aggr_model = merge_models(
             models=models,
             weights=weights_per_client,
             device=self.args.device
@@ -83,7 +83,7 @@ class Server():
         if (self.args.server_prune == True and
             (self.elapsed_comm_rounds % self.args.server_prune_freq) == 0) and \
                 (prune_percent < self.args.server_prune_threshold):
-                
+
             # prune the model using super_mask
             self.prune()
             # reinitialize model with std.dev of init_model
