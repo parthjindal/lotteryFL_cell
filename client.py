@@ -80,8 +80,6 @@ class Client():
             for name, param in self.model.named_parameters():
                 param.data.copy_(source_params[name].data)
             self.eita = self.eita_hat
-        elif prune_rate < self.args.prune_threshold and accuracy < self.eita:
-            self.eita *= self.alpha
 
         prune_summmary, num_zeros, num_global = get_prune_summary(model=self.model,
                                                                   name='weight')
