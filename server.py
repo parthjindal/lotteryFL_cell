@@ -183,7 +183,11 @@ class Server():
             Upload global model to clients
         """
         downlink_payload = 0  # logging
-        model_size = custom_save(self.model, "/dev/null")
+        model_copy = copy_model(self.model,self.args.device)
+        params = get_prune_params(model_copy, name='weight')
+        for param, name in params:
+            prune.remove(param, name)
+        model_size = custom_save(model_copy, "/dev/null")
         downlink_payload += model_size*len(clients)
 
         for client in clients:
