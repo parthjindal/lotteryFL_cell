@@ -128,16 +128,17 @@ class Client():
         metrics = self.eval(self.model)
         print(f'Trained model accuracy: {metrics["Accuracy"][0]}')
 
-        wandb.log({f"{self.idx}_cur_prune_rate": self.cur_prune_rate})
-        wandb.log({f"{self.idx}_eita": self.eita})
-        wandb.log(
-            {f"{self.idx}_percent_pruned": self.prune_rates[-1]})
+        log_dict = {f"{self.idx}_cur_prune_rate": self.cur_prune_rate,
+                    f"{self.idx}_eita": self.eita,
+                    f"{self.idx}_percent_pruned": self.prune_rates[-1]}
 
         for key, thing in metrics.items():
             if(isinstance(thing, list)):
-                wandb.log({f"{self.idx}_{key}": thing[0]})
+                log_dict[f"{self.idx}_{key}"] = thing[0]
             else:
-                wandb.log({f"{self.idx}_{key}": thing})
+                log_dict[f"{self.idx}_{key}"] = thing
+
+        wandb.log(log_dict)
 
         self.save(self.model)
         self.elapsed_comm_rounds += 1
