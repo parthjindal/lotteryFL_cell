@@ -2,14 +2,12 @@ import wandb
 from typing import List, Dict, Tuple
 import torch.nn.utils.prune as prune
 import numpy as np
-import random
 import os
 from tabulate import tabulate
 import torch
-import torch.nn as nn
-import torch.optim as optim
 from torch.nn import Module
-from util import get_prune_params, super_prune, fed_avg, l1_prune, create_model, copy_model, get_prune_summary
+from util import custom_save, get_prune_params, super_prune, fed_avg, l1_prune, copy_model, get_prune_summary
+from numpy import linalg as LA
 
 
 class Server():
@@ -34,6 +32,9 @@ class Server():
         self.elapsed_comm_rounds = 0
         self.curr_prune_step = 0.00
 
+        self.aggr_fn = fed_avg
+        # TODO: add function switcher
+
     def aggr(
         self,
         models,
@@ -45,7 +46,8 @@ class Server():
         weights_per_client = np.array(
             [client.num_data for client in clients], dtype=np.float32)
         weights_per_client /= np.sum(weights_per_client)
-        aggr_model = fed_avg(
+
+        aggr_model = self.aggr_fn(
             models=models,
             weights=weights_per_client,
             device=self.args.device
@@ -53,6 +55,7 @@ class Server():
         pruned_summary, _, _ = get_prune_summary(aggr_model, name='weight')
         print(tabulate(pruned_summary, headers='keys', tablefmt='github'))
 
+        # Restore masks by manually setting zeroed params as pruned
         prune_params = get_prune_params(aggr_model)
         for param, name in prune_params:
             zeroed_weights = torch.eq(
@@ -71,40 +74,41 @@ class Server():
         """
         self.elapsed_comm_rounds += 1
         self.prev_model = copy_model(self.model, self.args.device)
+
         print('-----------------------------', flush=True)
         print(
             f'| Communication Round: {self.elapsed_comm_rounds}  | ', flush=True)
         print('-----------------------------', flush=True)
-        _, num_pruned, num_total = get_prune_summary(self.model)
 
+        _, num_pruned, num_total = get_prune_summary(self.model)
         prune_percent = num_pruned / num_total
+
         # global_model pruned at fixed freq
         # with a fixed pruning step
         if (self.args.server_prune == True and
             (self.elapsed_comm_rounds % self.args.server_prune_freq) == 0) and \
                 (prune_percent < self.args.server_prune_threshold):
-                
             # prune the model using super_mask
             self.prune()
-            # reinitialize model with std.dev of init_model
+            # reinitialize model
             self.reinit()
 
+        # upload model to selected clients
         client_idxs = np.random.choice(
             self.num_clients, int(
-                self.args.frac_clients_per_round*self.num_clients),
+                self.args.C*self.num_clients),
             replace=False,
         )
         clients = [self.clients[i] for i in client_idxs]
-
-        # upload model to selected clients
-        self.upload(clients)
+        info = self.upload(clients)
+        downlink_payload = info['downlink_payload']
 
         # call training loop on all clients
         for client in clients:
             client.update()
 
         # download models from selected clients
-        models, accs = self.download(clients)
+        models, accs, uplink_payload = self.download(clients)
 
         avg_accuracy = np.mean(accs, axis=0, dtype=np.float32)
         print('-----------------------------', flush=True)
@@ -112,23 +116,19 @@ class Server():
         print('-----------------------------', flush=True)
 
         # compute average-model and (prune it by 0.00 )
-        aggr_model = self.aggr(models, clients)
-
-        # copy aggregated-model's params to self.model (keep buffer same)
-        self.model = aggr_model
+        self.model = self.aggr(models, clients)
 
         _, num_pruned, num_total = get_prune_summary(self.model)
         prune_percent = num_pruned / num_total
 
-        wandb.log({"client_avg_acc": avg_accuracy,
-                   "comm_round": self.elapsed_comm_rounds,
-                   "global_prune_percent": prune_percent})
-
-        print('Saving global model')
-        torch.save(self.model.state_dict(),
-                   f"./checkpoints/server_model_{self.elapsed_comm_rounds}.pt")
+        wandb.log({"Average accuracy": avg_accuracy,
+                   "Communication round": self.elapsed_comm_rounds,
+                   "Global pruned percentage": prune_percent,
+                   "Uplink payload": uplink_payload,
+                   "Downlink payload": downlink_payload})
 
     def prune(self):
+        # all prune methods are Objects of Pruning containers hence masks build on top of each other
         if self.args.prune_method == 'l1':
             l1_prune(model=self.model,
                      amount=self.args.server_prune_step,
@@ -141,37 +141,20 @@ class Server():
                         amount=self.args.server_prune_step,
                         name='weight',
                         verbose=self.args.prune_verbose)
-        elif self.args.prune_method == 'new_super_mask':
-            super_prune(model=self.model,
-                        init_model=self.prev_model,
-                        amount=self.args.server_prune_step,
-                        name='weight',
-                        verbose=self.args.prune_verbose)
-        elif self.args.prune_method == 'mix_l1_super_mask':
-            if self.elapsed_comm_rounds == self.server_prune_freq:
-                super_prune(model=self.model,
-                            init_model=self.init_model,
-                            amount=self.args.server_prune_step,
-                            name='weight',
-                            verbose=self.args.prune_verbose)
-            else:
-                l1_prune(model=self.model,
-                         amount=self.args.server_prune_step,
-                         name='weight',
-                         verbose=self.args.prune_verbose,
-                         glob=False)
 
     def reinit(self):
         if self.args.reinit_method == 'none':
             return
 
         elif self.args.reinit_method == 'std_dev':
+            # reinitialize parameters based on std_dev and sign of original parameters
             source_params = dict(self.init_model.named_parameters())
             for name, param in self.model.named_parameters():
                 std_dev = torch.std(source_params[name].data)
                 param.data.copy_(std_dev*torch.sign(source_params[name].data))
 
         elif self.args.reinit_method == 'init_weights':
+            # reinitialize parameters based on init_weights
             source_params = dict(self.init_model.named_parameters())
             for name, param in self.model.named_parameters():
                 param.data.copy_(source_params[name].data)
@@ -186,31 +169,23 @@ class Server():
         uploads = [client.upload() for client in clients]
         models = [upload["model"] for upload in uploads]
         accs = [upload["acc"] for upload in uploads]
-        return models, accs
+        uplink_payload = sum(x['size'] for x in uploads)
 
-    def save(
-        self,
-        *args,
-        **kwargs
-    ):
-        # """
-        #     Save model,meta-info,states
-        # """
-        # eval_log_path1 = f"./log/full_save/server/round{self.elapsed_comm_rounds}_model.pickle"
-        # eval_log_path2 = f"./log/full_save/server/round{self.elapsed_comm_rounds}_dict.pickle"
-        # if self.args.report_verbosity:
-        #     log_obj(eval_log_path1, self.model)
-        pass
+        return models, accs, uplink_payload
 
     def upload(
         self,
         clients,
         *args,
         **kwargs
-    ) -> None:
+    ) -> Dict:
         """
             Upload global model to clients
         """
+        downlink_payload = 0  # logging
+        model_size = custom_save(self.model, "/dev/null")
+        downlink_payload += model_size*len(clients)
+
         for client in clients:
             # make pruning permanent and then upload the model to clients
             model_copy = copy_model(self.model, self.args.device)
@@ -225,3 +200,7 @@ class Server():
                 prune.remove(param, name)
             # call client method
             client.download(model_copy, init_model_copy)
+
+        return {
+            "downlink_payload": downlink_payload
+        }

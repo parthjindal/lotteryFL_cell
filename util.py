@@ -27,11 +27,9 @@ def fed_avg(models: List[nn.Module], weights: torch.Tensor, device='cuda:0'):
         cls:  Class of original model
     """
     aggr_model = models[0].__class__().to(device)
-    model_params = []
     num_models = len(models)
-    for model in models:
-        model_params.append(dict(model.named_parameters()))
-
+    model_params = [dict(model.named_parameters()) for model in models]
+    
     for name, param in aggr_model.named_parameters():
         param.data.copy_(torch.zeros_like(param.data))
         for i in range(num_models):
@@ -337,7 +335,7 @@ def get_prune_params(model, name='weight') -> List[Tuple[nn.Parameter, str]]:
     return params_to_prune
 
 
-def get_prune_summary(model, name='weight') -> List[Union[Union[Dict[str, Union[List[Union[str, float]], float]], int], int]]:
+def get_prune_summary(model, name='weight') -> Tuple[Union[Union[Dict[str, Union[List[Union[str, float]], float]], int], int]]:
     num_global_zeros, num_layer_zeros, num_layer_weights = 0, 0, 0
     num_global_weights = 0
     global_prune_percent, layer_prune_percent = 0, 0
@@ -366,18 +364,22 @@ def get_prune_summary(model, name='weight') -> List[Union[Union[Dict[str, Union[
     return prune_stat, num_global_zeros, num_global_weights
 
 
-def custom_save(model, path):
+def custom_save(model, path)->int:
     """
     https://pytorch.org/docs/stable/generated/torch.save.html#torch.save
     Custom save utility function
     Compresses the model using gzip
-    Helpfull if model is highly pruned
+    Helpful if model is highly pruned
+    
+    Returns compressed model_size
     """
     bufferIn = io.BytesIO()
     torch.save(model.state_dict(), bufferIn)
     bufferOut = gzip.compress(bufferIn.getvalue())
+    bufferLen = len(bufferOut) / (1024.0)**2 #size in MB
     with gzip.open(path, 'wb') as f:
         f.write(bufferOut)
+    return bufferLen
 
 
 def custom_load(path) -> Dict:
@@ -428,9 +430,7 @@ class CustomPruneMethod(prune.BasePruningMethod):
             bottom_k = torch.topk(
                 large_weight_mask_ranked.view(-1), k=nparams_toprune, largest=False)
             mask.view(-1)[bottom_k.indices] = 0.00
-            return mask
-        else:
-            return mask
+        return mask
 
 
 def customPrune(module, orig_module, amount=0.1, name='weight'):

@@ -1,17 +1,10 @@
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from torch.nn import Module
-import numpy as np
-import os
 from typing import Dict
-import copy
-import math
 import wandb
 from torch.nn.utils import prune
-from util import get_prune_summary, l1_prune, get_prune_params, copy_model
-from util import train as util_train
-from util import test as util_test
+from util import get_prune_summary, l1_prune, get_prune_params, copy_model, custom_save
+from util import train as util_train, test as util_test
 
 
 class Client():
@@ -36,7 +29,9 @@ class Client():
         self.class_idxs = class_idxs
         self.elapsed_comm_rounds = 0
 
-        self.accuracies = []
+        # check if model is overfitting or not
+        self.train_accuracies = []
+        self.test_accuracies = []
         self.losses = []
         self.prune_rates = []
         self.cur_prune_rate = 0.00
@@ -49,57 +44,47 @@ class Client():
         """
             Interface to Server
         """
-        print(f"\n----------Client:{self.idx} Update---------------------")
-        print(f'----------User Class ids: {self.class_idxs}------------')
-        print(f"Evaluating Global model ")
+        print(f"\n----Client:{self.idx}, IDs: {self.class_idxs}----")
+        print(f"Evaluating Global model")
+
+        # compute metrics of downloaded model on local dataset
         metrics = self.eval(self.global_model)
         accuracy = metrics['Accuracy'][0]
         print(f'Global model accuracy: {accuracy}')
 
-        prune_summmary, num_zeros, num_global = get_prune_summary(model=self.global_model,
-                                                                  name='weight')
+        _, num_zeros, num_global = get_prune_summary(model=self.global_model,
+                                                     name='weight')
         prune_rate = num_zeros / num_global
         print('Global model prune percentage: {}'.format(prune_rate))
 
+        # if local pruning threshold is not yet achieved
         if self.cur_prune_rate < self.args.prune_threshold:
+            # lotteryFL condition (eita: accuracy threshold)
             if accuracy > self.eita:
                 self.cur_prune_rate = min(self.cur_prune_rate + self.args.prune_step,
-                                          self.args.prune_threshold)
+                                          self.args.prune_threshold)  # inc. pruning_rate by prune_step
+                # ? if downloaded model is already shallow should we prune ??
                 if self.cur_prune_rate > prune_rate:
                     l1_prune(model=self.global_model,
                              amount=self.cur_prune_rate,
                              name='weight',
                              verbose=self.args.prune_verbose)
                     # reinitialize model with init_params
-                    source_params = dict(
-                        self.global_init_model.named_parameters())
-                    for name, param in self.global_model.named_parameters():
-                        param.data.copy_(source_params[name].data)
+                    self.reinit(self.global_model, self.global_init_model)
+                    # log prune %
                     self.prune_rates.append(self.cur_prune_rate)
                 else:
                     # reprune by the downloaded global-model(important)
-                    # REVIEW: Rather than pruning each layer by orig_global_pruned_%,
-                    # pruned each layer by its' orig_pruned_%
-                    params_to_prune = get_prune_params(self.global_model)
-                    for param, name in params_to_prune:
-                        amount = torch.eq(getattr(param, name),
-                                          0.00).sum().float()
-                        prune.l1_unstructured(param, name, amount=int(amount))
+                    self.rediscover_mask(self.global_model)
+                    # log prune %
                     self.prune_rates.append(prune_rate)
-
-                self.model = self.global_model
+                # restore accuracy threshold back to original val
                 self.eita = self.eita_hat
-
             else:
                 # reprune by the downloaded global-model(important)
-                # REVIEW: Rather than pruning each layer by orig_global_pruned_%,
-                # pruned each layer by its' orig_pruned_%
-                params_to_prune = get_prune_params(self.global_model)
-                for param, name in params_to_prune:
-                    amount = torch.eq(getattr(param, name), 0.00).sum().float()
-                    prune.l1_unstructured(param, name, amount=int(amount))
-                self.eita *= self.alpha
-                self.model = self.global_model
+                self.rediscover_mask(self.global_model)
+                self.eita *= self.alpha  # reduce accuracy_threshold by alpha
+                # log prune %
                 self.prune_rates.append(prune_rate)
         else:
             if self.cur_prune_rate > prune_rate:
@@ -107,22 +92,19 @@ class Client():
                          amount=self.cur_prune_rate,
                          name='weight',
                          verbose=self.args.prune_verbose)
-                source_params = dict(self.global_init_model.named_parameters())
-                for name, param in self.global_model.named_parameters():
-                    param.data.copy_(source_params[name].data)
+                # reinitialize model with init_params
+                self.reinit(self.global_model, self.global_init_model)
+                # log prune %
                 self.prune_rates.append(self.cur_prune_rate)
             else:
-                # reprune by the downloaded global-model(not important)
-                params_to_prune = get_prune_params(self.global_model)
-                for param, name in params_to_prune:
-                    amount = torch.eq(getattr(param, name), 0.00).sum().float()
-                    prune.l1_unstructured(param, name, amount=int(amount))
+                self.rediscover_mask(self.global_model)
+                # log prune %
                 self.prune_rates.append(prune_rate)
 
-            self.model = self.global_model
+        self.model = self.global_model
 
         print(f"\nTraining local model")
-        self.train(self.elapsed_comm_rounds)
+        train_metrics = self.train(self.elapsed_comm_rounds)
 
         print(f"\nEvaluating Trained Model")
         metrics = self.eval(self.model)
@@ -130,25 +112,35 @@ class Client():
 
         log_dict = {f"{self.idx}_cur_prune_rate": self.cur_prune_rate,
                     f"{self.idx}_eita": self.eita,
-                    f"{self.idx}_percent_pruned": self.prune_rates[-1]}
+                    f"{self.idx}_percent_pruned": self.prune_rates[-1],
+                    f"{self.idx}_train_accuracy": train_metrics["Accuracy"][0]}
 
         for key, thing in metrics.items():
-            if(isinstance(thing, list)):
-                log_dict[f"{self.idx}_{key}"] = thing[0]
-            else:
-                log_dict[f"{self.idx}_{key}"] = thing
+            log_dict[f"{self.idx}_{key}"] = (
+                thing[0] if (isinstance(thing, list)) else thing
+            )
 
         wandb.log(log_dict)
-
-        self.save(self.model)
         self.elapsed_comm_rounds += 1
+
+    def rediscover_mask(self, model):
+        params_to_prune = get_prune_params(model)
+        for param, name in params_to_prune:
+            amount = torch.eq(getattr(param, name),
+                              0.00).sum().float()
+            prune.l1_unstructured(param, name, amount=int(amount))
+
+    def reinit(self, model, init_model):
+        source_params = dict(
+            init_model.named_parameters())
+        for name, param in model.named_parameters():
+            param.data.copy_(source_params[name].data)
 
     def train(self, round_index):
         """
             Train NN
         """
         losses = []
-
         for epoch in range(self.args.epochs):
             if self.args.train_verbose:
                 print(
@@ -161,10 +153,15 @@ class Client():
                                  self.args.fast_dev_run,
                                  self.args.train_verbose)
             losses.append(metrics['Loss'][0])
-
             if self.args.fast_dev_run:
                 break
+        metrics = util_test(self.model,
+                            self.train_loader,
+                            self.args.device,
+                            self.args.fast_dev_run,
+                            self.args.train_verbose)
         self.losses.extend(losses)
+        return metrics
 
     @torch.no_grad()
     def download(self, global_model, global_init_model, *args, **kwargs):
@@ -174,19 +171,9 @@ class Client():
         self.global_model = global_model
         self.global_init_model = global_init_model
 
-        # params_to_prune = get_prune_params(self.global_model)
-        # for param, name in params_to_prune:
-        #     weights = getattr(param, name)
-        #     masked = torch.eq(weights.data, 0.00).sum().item()
-        #     # masked = 0.00
-        #     prune.l1_unstructured(param, name, amount=int(masked))
-
         params_to_prune = get_prune_params(self.global_init_model)
         for param, name in params_to_prune:
-            weights = getattr(param, name)
-            # masked = torch.eq(weights.data, 0.00).sum().item()
-            masked = 0.00
-            prune.l1_unstructured(param, name, amount=int(masked))
+            prune.l1_unstructured(param, name, amount=0)
 
     def eval(self, model):
         """
@@ -197,12 +184,8 @@ class Client():
                                self.args.device,
                                self.args.fast_dev_run,
                                self.args.test_verbose)
-        self.accuracies.append(eval_score['Accuracy'][0])
+        self.test_accuracies.append(eval_score['Accuracy'][0])
         return eval_score
-
-    def save(self, model, **kwargs):
-        torch.save(model.state_dict(),
-                   f"./checkpoints/c{self.idx}_model_{self.elapsed_comm_rounds}")
 
     def upload(self, *args, **kwargs) -> Dict[nn.Module, float]:
         """
@@ -212,7 +195,9 @@ class Client():
         params_pruned = get_prune_params(upload_model, name='weight')
         for param, name in params_pruned:
             prune.remove(param, name)
+        model_size = custom_save(upload_model, "/dev/null")
         return {
             'model': upload_model,
-            'acc': self.accuracies[-1]
+            'acc': self.test_accuracies[-1],
+            'size': model_size
         }

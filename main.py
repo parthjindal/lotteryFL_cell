@@ -41,7 +41,7 @@ if __name__ == "__main__":
     parser.add_argument('--server_prune', type=bool, default=False)
     parser.add_argument('--server_prune_step', type=float, default=0.2)
     parser.add_argument('--server_prune_freq', type=int, default=10)
-    parser.add_argument('--frac_clients_per_round', type=float, default=1.0)
+    parser.add_argument('--C', type=float, default=1.0)
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--lr', type=float, default=1e-3)

@@ -114,7 +114,7 @@ def get_data_noniid_cifar10(num_users, n_class, nsamples, batch_size=32, rate_un
 def get_data_noniid_mnist(num_users, n_class, nsamples, batch_size=32, rate_unbalance=1.0, num_workers=1):
 
     train_data, test_data = [], []
-    train_data, test_data, user_train, user_test = get_dataset_mnist_extr_noniid(
+    train_data, test_data, user_train, user_test, class_idxs = get_dataset_mnist_extr_noniid(
         num_users, n_class, nsamples, rate_unbalance)
 
     train_loaders = []
@@ -139,4 +139,4 @@ def get_data_noniid_mnist(num_users, n_class, nsamples, batch_size=32, rate_unba
             test_data, batch_sampler=sampler_test)
         test_loaders.append(loader_test)
 
-    return train_loaders, test_loaders
+    return train_loaders, test_loaders, class_idxs
