@@ -39,8 +39,9 @@ class Client():
         self.model = None
         self.global_model = None
         self.global_init_model = None
+        self.global_cached_model = None
 
-    def update(self) -> None:
+    def update(self) -> None:  # sourcery skip
         """
             Interface to Server
         """
@@ -70,7 +71,7 @@ class Client():
                              name='weight',
                              verbose=self.args.prune_verbose)
                     # reinitialize model with init_params
-                    self.reinit(self.global_model, self.global_init_model)
+                    self.reinit(self.global_model, self.global_cached_model)
                     # log prune %
                     self.prune_rates.append(self.cur_prune_rate)
                 else:
@@ -93,7 +94,7 @@ class Client():
                          name='weight',
                          verbose=self.args.prune_verbose)
                 # reinitialize model with init_params
-                self.reinit(self.global_model, self.global_init_model)
+                self.reinit(self.global_model, self.global_cached_model)
                 # log prune %
                 self.prune_rates.append(self.cur_prune_rate)
             else:
@@ -169,11 +170,27 @@ class Client():
             Download global model from server
         """
         self.global_model = global_model
+
         self.global_init_model = global_init_model
 
         params_to_prune = get_prune_params(self.global_init_model)
         for param, name in params_to_prune:
             prune.l1_unstructured(param, name, amount=0)
+
+        if self.global_cached_model is None:
+            self.global_cached_model = copy_model(
+                global_init_model, self.args.device)
+            util_train(
+                self.global_cached_model,
+                self.train_loader,
+                self.args.lr,
+                self.args.device,
+                self.args.fast_dev_run,
+                self.args.train_verbose
+            )
+            params_to_prune = get_prune_params(self.global_cached_model)
+            for param, name in params_to_prune:
+                prune.l1_unstructured(param, name, amount=0)
 
     def eval(self, model):
         """
