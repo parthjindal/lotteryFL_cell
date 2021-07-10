@@ -79,6 +79,7 @@ def cifar_extr_noniid(train_dataset, test_dataset, num_users, n_class, num_sampl
                     (user_labels, labels[rand*num_imgs_train:int((rand+rate_unbalance)*num_imgs_train)]), axis=0)
             unbalance_flag = 1
         user_labels_set = set(user_labels)
+        assert (temp_set == user_labels_set), "Data split failed\n"
 
         for label in user_labels_set:
             dict_users_test[i] = np.concatenate(
