@@ -2,7 +2,6 @@ import os
 import sys
 import errno
 import pickle
-import math
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -29,13 +28,39 @@ def fed_avg(models: List[nn.Module], weights: torch.Tensor, device='cuda:0'):
     aggr_model = models[0].__class__().to(device)
     num_models = len(models)
     model_params = [dict(model.named_parameters()) for model in models]
-    
+
     for name, param in aggr_model.named_parameters():
         param.data.copy_(torch.zeros_like(param.data))
         for i in range(num_models):
             weighted_param = torch.mul(
                 model_params[i][name].data, weights[i])
             param.data.copy_(param.data + weighted_param)
+    return aggr_model
+
+
+@torch.no_grad()
+def merge_models(models: List[nn.Module], weights: torch.Tensor, device='cuda:0'):
+    """
+        Aggregates the model by merging subnetworks ie. averaged by no. of 
+        non-zero weight vals across subnetworks
+
+        models: list of nn.modules(unpruned/pruning removed)
+        weights: normalized weights for each model
+        cls:  Class of original model
+
+    """
+    aggr_model = models[0].__class__().to(device)
+    num_models = len(models)
+    model_params = [dict(model.named_parameters()) for model in models]
+
+    for name, param in aggr_model.named_parameters():
+        param.data.copy_(torch.zeros_like(param.data))
+        non_zero_weights = torch.ones_like(param.data)*(1E-6)
+        for i in range(num_models):
+            weighted_param = model_params[i][name].data
+            non_zero_weights += ~torch.eq(weighted_param, 0.00)
+            param.data.copy_(param.data + weighted_param)
+        param.data.copy_(torch.div(param.data, non_zero_weights))
     return aggr_model
 
 
@@ -80,7 +105,7 @@ def train(
     verbose=True
 ) -> Dict[str, torch.Tensor]:
 
-    optimizer = torch.optim.Adam(lr=lr, params=model.parameters())
+    optimizer = optim.Adam(lr=lr, params=model.parameters())
     loss_fn = nn.CrossEntropyLoss()
     num_batch = len(train_dataloader)
     global metrics
@@ -122,127 +147,6 @@ def train(
     if verbose:
         print(tabulate(outputs, headers='keys', tablefmt='github'))
     return outputs
-
-
-# def evaluate(model, data_loader, verbose=True):
-#     # Swithicing off gradient calculation to save memory
-#     torch.no_grad()
-#     # Switch to eval mode so that layers like Dropout function correctly
-#     model.eval()
-
-#     metric_names = ['Loss',
-#                     'Accuracy',
-#                     'Balanced Accuracy',
-#                     'Precision Micro',
-#                     'Recall Micro',
-#                     'Precision Macro',
-#                     'Recall Macro']
-
-#     score = {name: [] for name in metric_names}
-
-#     num_batch = len(data_loader)
-
-#     progress_bar = tqdm(enumerate(data_loader),
-#                         total=num_batch,
-#                         file=sys.stdout)
-
-#     for i, (x, ytrue) in progress_bar:
-
-#         yraw = model(x)
-
-#         _, ypred = torch.max(yraw, 1)
-
-#         score = calculate_metrics(score, ytrue, yraw, ypred)
-
-#         progress_bar.set_description('Evaluating')
-
-#     for k, v in score.items():
-#         score[k] = [sum(v) / len(v)]
-
-#     if verbose:
-#         print('Evaluation Score: ')
-#         print(tabulate(score, headers='keys', tablefmt='github'), flush=True)
-#     model.train()
-#     torch.enable_grad()
-#     return score
-
-
-# @torch.no_grad()
-# def fevaluate(model, data_loader, verbose=True):
-#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#     # Switch to eval mode so that layers like Dropout function correctly
-#     model.eval()
-#     metric_names = ['Loss',
-#                     'Accuracy',
-#                     'Balanced Accuracy',
-#                     'Precision Micro',
-#                     'Recall Micro',
-#                     'Precision Macro',
-#                     'Recall Macro']
-
-#     score = {name: [] for name in metric_names}
-
-#     num_batch = len(data_loader)
-
-#     classtypes = set()
-#     progress_bar = tqdm(enumerate(data_loader),
-#                         total=num_batch,
-#                         file=sys.stdout)
-
-#     for i, (x, ytrue) in progress_bar:
-#         classtypes.add(int(ytrue[0]))
-#         x = x.to(device)
-#         # ytrue = ytrue.to(device)
-#         yraw = model(x)
-#         # yraw = yraw.to(device)
-#         _, ypred = torch.max(yraw, 1)
-#         # ypred = ypred.to(device)
-
-#         score = calculate_metrics(score, ytrue, yraw.cpu(), ypred.cpu())
-
-#         progress_bar.set_description('Evaluating')
-
-#     pclass2 = ''
-#     class_name = ['airplane', 'car', 'bird', 'cat',
-#                   'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
-#     for c in classtypes:
-#         pclass2 += class_name[c]+' '
-#     """
-#     pclass = ''
-#     for c in classtypes:
-#         if c == 0:
-#             pclass = pclass + 'airplane '
-#         elif c == 1:
-#             pclass = pclass + 'car '
-#         elif c == 2:
-#             pclass = pclass + 'bird '
-#         elif c == 3:
-#             pclass = pclass + 'cat '
-#         elif c == 4:
-#             pclass = pclass + 'deer '
-#         elif c == 5:
-#             pclass = pclass + 'dog '
-#         elif c == 6:
-#             pclass = pclass + 'frog '
-#         elif c == 7:
-#             pclass = pclass + 'horse '
-#         elif c == 8:
-#             pclass = pclass + 'ship '
-#         elif c == 9:
-#             pclass = pclass + 'truck '
-#             """
-#     for k, v in score.items():
-#         score[k] = [sum(v) / len(v)]
-
-#     print('Acc. for classes', classtypes, pclass2,
-#           ": ", score['Accuracy'][-1], flush=True)
-
-#     if verbose:
-#         print('Evaluation Score: ')
-#         print(tabulate(score, headers='keys', tablefmt='github'), flush=True)
-#     model.train()
-#     torch.enable_grad()
-#     return score
 
 
 @ torch.no_grad()
@@ -364,19 +268,19 @@ def get_prune_summary(model, name='weight') -> Tuple[Union[Union[Dict[str, Union
     return prune_stat, num_global_zeros, num_global_weights
 
 
-def custom_save(model, path)->int:
+def custom_save(model, path) -> int:
     """
     https://pytorch.org/docs/stable/generated/torch.save.html#torch.save
     Custom save utility function
     Compresses the model using gzip
     Helpful if model is highly pruned
-    
+
     Returns compressed model_size
     """
     bufferIn = io.BytesIO()
     torch.save(model.state_dict(), bufferIn)
     bufferOut = gzip.compress(bufferIn.getvalue())
-    bufferLen = len(bufferOut) / (1024.0)**2 #size in MB
+    bufferLen = len(bufferOut) / (1024.0)**2  # size in MB
     with gzip.open(path, 'wb') as f:
         f.write(bufferOut)
     return bufferLen
