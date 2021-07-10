@@ -6,9 +6,13 @@ import os
 from tabulate import tabulate
 import torch
 from torch.nn import Module
-from util import custom_save, get_prune_params, super_prune, fed_avg, l1_prune, copy_model, get_prune_summary
+from util import custom_save, get_prune_params, super_prune, fed_avg, l1_prune, copy_model, get_prune_summary, merge_models
 from numpy import linalg as LA
 
+aggregation_fns = {
+    "fed_avg": fed_avg,
+    "merge_models": merge_models
+}
 
 class Server():
     """
@@ -32,7 +36,8 @@ class Server():
         self.elapsed_comm_rounds = 0
         self.curr_prune_step = 0.00
 
-        self.aggr_fn = fed_avg
+        self.aggr_fn = aggregation_fns[self.args.aggr_fn]
+
         # TODO: add function switcher
 
     def aggr(
