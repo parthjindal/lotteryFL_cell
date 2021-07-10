@@ -1,18 +1,14 @@
 import os
-import torch
 import argparse
-import pickle
 from pytorch_lightning import seed_everything
 from model.cifar10.cnn import CNN as CIFAR_CNN
 from model.cifar10.mlp import MLP as CIFAR_MLP
 from model.mnist.cnn import CNN as MNIST_CNN
 from model.mnist.mlp import MLP as MNIST_MLP
 from server import Server
-from client import Client
 from util import create_model
 import wandb
 from dataset.datasource import DataLoaders
-from torchmetrics import MetricCollection, Accuracy, Precision, Recall, F1
 
 models = {
     'cifar10': {
@@ -67,9 +63,17 @@ if __name__ == "__main__":
                         help='l1|old_super_mask|new_super_mask|mix_l1_super_mask')
     parser.add_argument('--server_prune_threshold', type=float, default=0.8)
     parser.add_argument('--proj_name', type=str, default='CELL')
+    parser.add_argument('--aggr_fn', type=str, default="merge_models")
+    parser.add_argument('--client_type', type=str,
+                        default="client", help='client | lotteryClient')
 
     args = parser.parse_args()
-
+    
+    if args.client_type == 'client':
+        from client import Client
+    elif args.client_type == 'lotteryClient':
+        from lotteryClient import Client 
+       
     seed_everything(seed=args.seed, workers=True)
 
     model = create_model(cls=models[args.dataset]
