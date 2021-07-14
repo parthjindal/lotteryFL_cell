@@ -39,9 +39,8 @@ class Client():
         self.model = None
         self.global_model = None
         self.global_init_model = None
-        self.global_cached_model = None
 
-    def update(self) -> None:  # sourcery skip
+    def update(self) -> None:
         """
             Interface to Server
         """
@@ -71,11 +70,11 @@ class Client():
                      amount=self.cur_prune_rate,
                      name='weight',
                      verbose=self.args.prune_verbose)
-            self.reinit(self.model, self.global_cached_model)
+            self.reinit(self.model, self.global_init_model)
             self.eita = self.eita_hat
 
-        prune_summmary, num_zeros, num_global = get_prune_summary(model=self.model,
-                                                                  name='weight')
+        _, num_zeros, num_global = get_prune_summary(model=self.model,
+                                                     name='weight')
         prune_rate = num_zeros / num_global
         self.prune_rates.append(prune_rate)
 
@@ -149,26 +148,22 @@ class Client():
         for param, name in params_to_prune:
             prune.l1_unstructured(param, name, amount=0)
 
-        self.global_init_model = global_init_model
+        if self.global_init_model is not None:
+            self.global_init_model = global_init_model
 
-        params_to_prune = get_prune_params(self.global_init_model)
-        for param, name in params_to_prune:
-            prune.l1_unstructured(param, name, amount=0)
+            params_to_prune = get_prune_params(self.global_init_model)
+            for param, name in params_to_prune:
+                prune.l1_unstructured(param, name, amount=0)
 
-        if self.global_cached_model is None:
-            # use this model for reinitialization
+            for _ in range(self.args.reinit_epochs):
+                util_train(
+                    self.global_init_model,
+                    self.train_loader,
+                    self.args.lr,
+                    self.args.device,
+                    self.args.fast_dev_run)
 
-            self.global_cached_model = copy_model(
-                global_init_model, self.args.device)
-            metrics = util_train(
-                self.global_cached_model,
-                self.train_loader,
-                self.args.lr,
-                self.args.device,
-                self.args.fast_dev_run,
-                self.args.train_verbose
-            )
-            params_to_prune = get_prune_params(self.global_cached_model)
+            params_to_prune = get_prune_params(self.global_init_model)
             for param, name in params_to_prune:
                 prune.l1_unstructured(param, name, amount=0)
 

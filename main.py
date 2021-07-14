@@ -5,6 +5,8 @@ from model.cifar10.cnn import CNN as CIFAR_CNN
 from model.cifar10.mlp import MLP as CIFAR_MLP
 from model.mnist.cnn import CNN as MNIST_CNN
 from model.mnist.mlp import MLP as MNIST_MLP
+from model.cifar10.vgg import VGG as CIFAR_VGG
+
 from server import Server
 from util import create_model
 import wandb
@@ -13,7 +15,8 @@ from dataset.datasource import DataLoaders
 models = {
     'cifar10': {
         'cnn': CIFAR_CNN,
-        'mlp': CIFAR_MLP
+        'mlp': CIFAR_MLP,
+        'vgg': CIFAR_VGG
     },
     'mnist': {
         'cnn': MNIST_CNN,
@@ -26,7 +29,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', help="mnist|cifar10",
                         type=str, default="cifar10")
-    parser.add_argument('--arch', type=str, default='cnn', help='cnn|mlp')
+    parser.add_argument('--arch', type=str, default='cnn',
+                        help='cnn|mlp|vgg, VGG only applicable for cifar10')
     parser.add_argument('--dataset_mode', type=str,
                         default='non-iid', help='non-iid|iid')
     parser.add_argument('--rate_unbalance', type=float, default=1.0)
@@ -66,14 +70,15 @@ if __name__ == "__main__":
     parser.add_argument('--aggr_fn', type=str, default="merge_models")
     parser.add_argument('--client_type', type=str,
                         default="client", help='client | lotteryClient')
-
+    parser.add_argument('--reinit_epochs', type=int, default=1,
+                        help='no. of epochs to train init model to be used for reinit')
     args = parser.parse_args()
-    
+
     if args.client_type == 'client':
         from client import Client
     elif args.client_type == 'lotteryClient':
-        from lotteryClient import Client 
-       
+        from lotteryClient import Client
+
     seed_everything(seed=args.seed, workers=True)
 
     model = create_model(cls=models[args.dataset]

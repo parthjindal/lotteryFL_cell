@@ -230,12 +230,21 @@ def summarize_prune(model: nn.Module, name: str = 'weight') -> tuple:
     return (num_pruned, num_global_weights)
 
 
-def get_prune_params(model, name='weight') -> List[Tuple[nn.Parameter, str]]:
+def get_prune_params(model, name: str = 'weight') -> List[Tuple[nn.Parameter, str]]:
+
     params_to_prune = []
-    for _, module in model.named_children():
-        for name_, param in module.named_parameters():
-            if name in name_:
+    if hasattr(model, 'prunable_modules'):
+        for mod_name, module in model.named_modules():
+            if mod_name in model.prunable_modules and hasattr(module, name):
                 params_to_prune.append((module, name))
+        return params_to_prune
+
+    else:
+        for _, module in model.named_children():
+            for name_, param in module.named_parameters():
+                if name in name_:
+                    params_to_prune.append((module, name))
+
     return params_to_prune
 
 
