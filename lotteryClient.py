@@ -54,6 +54,10 @@ class Client():
             for name, param in self.model.named_parameters():
                 param.data.copy_(source_params[name].data)
 
+        for name,param in get_prune_params(self.model):
+            prune.remove(param, name)
+        self.rediscover_mask(self.model)
+
         # compute metrics of downloaded model on local dataset
         metrics = self.eval(self.model)
         accuracy = metrics['Accuracy'][0]
@@ -162,10 +166,6 @@ class Client():
                     self.args.lr,
                     self.args.device,
                     self.args.fast_dev_run)
-
-            params_to_prune = get_prune_params(self.global_init_model)
-            for param, name in params_to_prune:
-                prune.l1_unstructured(param, name, amount=0)
 
     def eval(self, model):
         """
