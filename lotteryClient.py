@@ -54,7 +54,7 @@ class Client():
             for name, param in self.model.named_parameters():
                 param.data.copy_(source_params[name].data)
 
-        for name,param in get_prune_params(self.model):
+        for param,name in get_prune_params(self.model):
             prune.remove(param, name)
         self.rediscover_mask(self.model)
 
