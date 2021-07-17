@@ -152,7 +152,7 @@ class Client():
         for param, name in params_to_prune:
             prune.l1_unstructured(param, name, amount=0)
 
-        if self.global_init_model is not None:
+        if self.global_init_model is None:
             self.global_init_model = global_init_model
 
             params_to_prune = get_prune_params(self.global_init_model)
